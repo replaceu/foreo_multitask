@@ -124,7 +124,9 @@ class MultiTaskTrainer(DetectionTrainer):
         from .val import MultiTaskValidator
 
         self.loss_names = "box_loss", "cls_loss", "dfl_loss", "seg_loss", "pose_loss", "kobj_loss"
-        return MultiTaskValidator(self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks)
+        return MultiTaskValidator(
+            self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
+        )
 
     def plot_training_labels(self):
         return

@@ -82,4 +82,6 @@ class MultiTaskPredictor(DetectionPredictor):
             keypoints = kpts_raw.view(kpts_raw.shape[0], *kpt_shape)
             keypoints = ops.scale_coords(img.shape[2:], keypoints, orig_img.shape)
 
-        return Results(orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6], masks=masks, keypoints=keypoints)
+        return Results(
+            orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6], masks=masks, keypoints=keypoints
+        )

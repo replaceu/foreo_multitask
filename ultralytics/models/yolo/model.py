@@ -13,10 +13,10 @@ from ultralytics.models import yolo
 from ultralytics.nn.tasks import (
     ClassificationModel,
     DetectionModel,
+    MultiTaskModel,
     OBBModel,
     PoseModel,
     SegmentationModel,
-    MultiTaskModel,
     WorldModel,
     YOLOEModel,
     YOLOESegModel,
