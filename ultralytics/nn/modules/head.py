@@ -20,7 +20,18 @@ from .conv import Conv, DWConv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init
 
-__all__ = "OBB", "Classify", "Detect", "Pose", "MultiTask", "RTDETRDecoder", "Segment", "YOLOEDetect", "YOLOESegment", "v10Detect"
+__all__ = (
+    "OBB",
+    "Classify",
+    "Detect",
+    "MultiTask",
+    "Pose",
+    "RTDETRDecoder",
+    "Segment",
+    "YOLOEDetect",
+    "YOLOESegment",
+    "v10Detect",
+)
 
 
 class Detect(nn.Module):
@@ -642,8 +653,6 @@ class Pose(Detect):
             return y
 
 
-
-
 class MultiTask(Detect):
     """YOLO multi-task head for detection, segmentation, and pose."""
 
@@ -664,16 +673,12 @@ class MultiTask(Detect):
         self.proto = Proto(ch[0], self.npr, self.nm)
 
         c4 = max(ch[0] // 4, self.nm)
-        self.cv4 = nn.ModuleList(
-            nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.nm, 1)) for x in ch
-        )
+        self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.nm, 1)) for x in ch)
 
         self.kpt_shape = kpt_shape
         self.nk = kpt_shape[0] * kpt_shape[1]
         c5 = max(ch[0] // 4, self.nk)
-        self.cv5 = nn.ModuleList(
-            nn.Sequential(Conv(x, c5, 3), Conv(c5, c5, 3), nn.Conv2d(c5, self.nk, 1)) for x in ch
-        )
+        self.cv5 = nn.ModuleList(nn.Sequential(Conv(x, c5, 3), Conv(c5, c5, 3), nn.Conv2d(c5, self.nk, 1)) for x in ch)
         if end2end:
             self.one2one_cv4 = copy.deepcopy(self.cv4)
             self.one2one_cv5 = copy.deepcopy(self.cv5)
@@ -686,7 +691,9 @@ class MultiTask(Detect):
     @property
     def one2one(self):
         """Return one-to-one head components."""
-        return dict(box_head=self.one2one_cv2, cls_head=self.one2one_cv3, mask_head=self.one2one_cv4, pose_head=self.one2one_cv5)
+        return dict(
+            box_head=self.one2one_cv2, cls_head=self.one2one_cv3, mask_head=self.one2one_cv4, pose_head=self.one2one_cv5
+        )
 
     def forward_head(
         self,
