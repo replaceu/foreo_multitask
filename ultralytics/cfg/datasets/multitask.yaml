@@ -1,0 +1,23 @@
+# Multi-task dataset for detect/segment/pose
+path: .
+
+names:
+  0: spot
+  1: wrinkle
+  2: luna
+
+kpt_shape: [10, 3]
+
+tasks:
+  detect:
+    train: spot/train/images
+    val: spot/val/images
+    cls: 0
+  segment:
+    train: wrinkle/train/images
+    val: wrinkle/valid/images
+    cls: 1
+  pose:
+    train: luna/images/train
+    val: luna/images/val
+    cls: 2

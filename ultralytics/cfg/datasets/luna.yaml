@@ -1,0 +1,8 @@
+# Ultralytics YOLO pose dataset
+path: luna
+train: images/train
+val: images/val
+kpt_shape: [10, 3]
+
+names:
+  0: luna

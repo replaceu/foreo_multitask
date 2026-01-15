@@ -1231,3 +1231,50 @@ class TVPSegmentLoss(TVPDetectLoss):
         vp_loss = self.vp_criterion(preds, batch)
         cls_loss = vp_loss[0][2]
         return cls_loss, vp_loss[1]
+
+
+class v8MultiTaskLoss:
+    """Criterion for multi-task training across detect/segment/pose."""
+
+    def __init__(self, model, tal_topk: int = 10, tal_topk2: int | None = 10):
+        self.det_loss = v8DetectionLoss(model, tal_topk, tal_topk2)
+        self.seg_loss = v8SegmentationLoss(model, tal_topk, tal_topk2)
+        self.pose_loss = v8PoseLoss(model, tal_topk, tal_topk2)
+        self.device = self.det_loss.device
+
+    def __call__(self, preds: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]):
+        return self.loss(preds, batch)
+
+    def loss(self, preds: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]):
+        task = batch.get("task")
+        if task is None:
+            if "masks" in batch:
+                task = "segment"
+            elif "keypoints" in batch:
+                task = "pose"
+            else:
+                task = "detect"
+
+        if task == "segment":
+            loss, _ = self.seg_loss(preds, batch)
+            full = loss.new_zeros(6)
+            full[0] = loss[0]  # box
+            full[1] = loss[2]  # cls
+            full[2] = loss[3]  # dfl
+            full[3] = loss[1]  # seg
+        elif task == "pose":
+            loss, _ = self.pose_loss(preds, batch)
+            full = loss.new_zeros(6)
+            full[0] = loss[0]  # box
+            full[1] = loss[3]  # cls
+            full[2] = loss[4]  # dfl
+            full[4] = loss[1]  # pose
+            full[5] = loss[2]  # kobj
+        else:
+            loss, _ = self.det_loss(preds, batch)
+            full = loss.new_zeros(6)
+            full[0] = loss[0]
+            full[1] = loss[1]
+            full[2] = loss[2]
+
+        return full, full.detach()

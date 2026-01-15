@@ -1,0 +1,7 @@
+# Ultralytics YOLO segmentation dataset
+path: wrinkle
+train: train/images
+val: valid/images
+
+names:
+  0: wrinkle
