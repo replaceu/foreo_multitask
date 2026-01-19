@@ -19,6 +19,10 @@ class MultiTaskTrainer(DetectionTrainer):
 
     def __init__(self, cfg=DEFAULT_CFG, overrides: dict[str, Any] | None = None, _callbacks=None):
         """初始化训练器,调用父类构造函数"""
+        if overrides is None:
+            overrides = {}
+        # Keep task consistent with multitask heads and datasets.
+        overrides.setdefault("task", "multitask")
         super().__init__(cfg, overrides, _callbacks)
 
     def get_dataset(self) -> dict[str, Any]:
@@ -59,6 +63,11 @@ class MultiTaskTrainer(DetectionTrainer):
             if "cls" not in task_cfg:
                 task_cfg["cls"] = 0
         data["tasks"] = tasks
+
+        # Prefer pose kpt_shape if the top-level config does not define one.
+        pose_cfg = tasks.get("pose")
+        if pose_cfg and pose_cfg.get("kpt_shape") and not data.get("kpt_shape"):
+            data["kpt_shape"] = pose_cfg["kpt_shape"]
 
         # 设置类别名称和数量,以Detect任务为基准
         detect_cfg = tasks["detect"]
@@ -148,17 +157,23 @@ class MultiTaskTrainer(DetectionTrainer):
         
         # 验证模式:仅使用Detect数据集
         # 目前看来验证阶段主要评估检测性能,或者使用检测数据集进行基础验证
-        detect_cfg = self.data["tasks"]["detect"]
-        img_path = detect_cfg.get("val") or detect_cfg.get("test")
-        dataset = self.build_dataset(img_path, mode=mode, batch=batch_size, task="detect")
-        return build_dataloader(
-            dataset,
-            batch=batch_size,
-            workers=self.args.workers * 2,
-            shuffle=False,
-            rank=rank,
-            drop_last=False,
-        )
+        # Validation uses per-task loaders so each head is evaluated on its own data.
+        loaders = {}
+        for task_name, task_cfg in self.data["tasks"].items():
+            img_path = task_cfg.get(self.args.split) or task_cfg.get("val") or task_cfg.get("test")
+            if not img_path:
+                LOGGER.warning("multitask val: '%s' task has no %s split, skipping.", task_name, self.args.split)
+                continue
+            dataset = self.build_dataset(img_path, mode=mode, batch=batch_size, task=task_name)
+            loaders[task_name] = build_dataloader(
+                dataset,
+                batch=batch_size,
+                workers=self.args.workers * 2,
+                shuffle=False,
+                rank=rank,
+                drop_last=False,
+            )
+        return loaders
 
     def get_model(self, cfg: str | None = None, weights: str | None = None, verbose: bool = True):
         """
@@ -191,8 +206,40 @@ class MultiTaskTrainer(DetectionTrainer):
         """
         from .val import MultiTaskValidator
 
-        self.loss_names = "box_loss", "cls_loss", "dfl_loss", "seg_loss", "pose_loss", "kobj_loss"
+        self.loss_names = {
+            "det": ["box_loss", "cls_loss", "dfl_loss"],
+            "seg": ["Tv_loss", "FL_loss"],
+            "pose": ["pose_loss", "kobj_loss"],
+        }
         return MultiTaskValidator(self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks)
+
+    def _flatten_loss_names(self):
+        loss_names = []
+        for task_name in ("det", "seg", "pose"):
+            loss_names.extend(self.loss_names.get(task_name, []))
+        return loss_names
+
+    def _loss_items_to_list(self, loss_items):
+        values = loss_items.tolist() if hasattr(loss_items, "tolist") else list(loss_items)
+        det = (values + [0.0] * 3)[:3]
+        # v8MultiTaskLoss provides a single seg loss; pad if more seg names are configured.
+        seg_values = values[3:4]
+        seg = seg_values + [0.0] * max(0, len(self.loss_names.get("seg", [])) - len(seg_values))
+        pose_values = values[4:6]
+        pose = pose_values + [0.0] * max(0, len(self.loss_names.get("pose", [])) - len(pose_values))
+        return det + seg + pose
+
+    def label_loss_items(self, loss_items=None, prefix="train"):
+        loss_names = self._flatten_loss_names()
+        keys = [f"{prefix}/{x}" for x in loss_names]
+        if loss_items is None:
+            return keys
+        loss_values = [round(float(x), 5) for x in self._loss_items_to_list(loss_items)]
+        return dict(zip(keys, loss_values))
+
+    def progress_string(self):
+        loss_names = self._flatten_loss_names()
+        return ("\n" + "%11s" * (4 + len(loss_names))) % ("Epoch", "GPU_mem", *loss_names, "Instances", "Size")
 
     def plot_training_labels(self):
         """
