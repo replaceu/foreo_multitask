@@ -1255,6 +1255,11 @@ class v8MultiTaskLoss:
             else:
                 task = "detect"
 
+        if isinstance(preds, dict) and any(k in preds for k in ("detect", "segment", "pose")):
+            preds = preds.get(task)
+            if preds is None:
+                raise KeyError(f"Missing '{task}' predictions for multitask loss.")
+
         if task == "segment":
             loss, _ = self.seg_loss(preds, batch)
             full = loss.new_zeros(6)

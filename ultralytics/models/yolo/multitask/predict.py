@@ -15,6 +15,8 @@ class MultiTaskPredictor(DetectionPredictor):
         self.args.task = "multitask"
 
     def _get_head_meta(self):
+        if hasattr(self, "_forced_head_meta") and self._forced_head_meta is not None:
+            return self._forced_head_meta
         head = getattr(self.model, "model", None)
         if hasattr(head, "model"):
             head = head.model
@@ -28,11 +30,20 @@ class MultiTaskPredictor(DetectionPredictor):
     def postprocess(self, preds, img, orig_imgs, **kwargs):
         proto = None
         pred = preds
-        if isinstance(preds, (list, tuple)):
-            if isinstance(preds[0], tuple):
-                pred, proto = preds[0]
+        if isinstance(preds, dict):
+            pred = preds.get("detect")
+        if isinstance(pred, (list, tuple)):
+            if isinstance(pred[0], tuple):
+                pred, proto = pred[0]
             else:
-                pred = preds[0]
+                pred = pred[0]
+
+        self._forced_head_meta = None
+        if isinstance(preds, dict) and proto is None:
+            self._forced_head_meta = (0, 0, None)
+
+        if pred is None:
+            raise ValueError("Missing detect predictions for multitask inference.")
 
         pred = nms.non_max_suppression(
             pred,

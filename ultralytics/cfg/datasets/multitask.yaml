@@ -1,23 +1,25 @@
-# Multi-task dataset for detect/segment/pose
-path: .
-
-names:
-  0: spot
-  1: wrinkle
-  2: luna
-
-kpt_shape: [10, 3]
+# ultralytics/cfg/datasets/multitask.yaml
+path: /home/.local/datasets/foreo_multitask
+train: spot/train/images
+val: spot/val/images
 
 tasks:
-  detect:
+  spot:
+    task: detect
     train: spot/train/images
     val: spot/val/images
-    cls: 0
-  segment:
+    nc: 1
+    names: [spot]
+  luna:
+    task: pose
+    train: luna/train/images
+    val: luna/val/images
+    nc: 1
+    names: [luna]
+    kpt_shape: [10, 3]
+  wrinkle:
+    task: segment
     train: wrinkle/train/images
-    val: wrinkle/valid/images
-    cls: 1
-  pose:
-    train: luna/images/train
-    val: luna/images/val
-    cls: 2
+    val: wrinkle/val/images
+    nc: 1
+    names: [wrinkle]

@@ -24,11 +24,6 @@ class MultiTaskTrainer(DetectionTrainer):
         data = YAML.load(self.args.data, append_filename=True)
         if "tasks" not in data:
             raise RuntimeError("multitask data.yaml must define a 'tasks' mapping.")
-
-        if "names" not in data:
-            raise RuntimeError("multitask data.yaml must define 'names'.")
-        data["names"] = check_class_names(data["names"])
-        data["nc"] = len(data["names"])
         data["channels"] = data.get("channels", 3)
 
         base = Path(data.get("path") or Path(data.get("yaml_file", "")).parent)
@@ -50,6 +45,21 @@ class MultiTaskTrainer(DetectionTrainer):
             if "cls" not in task_cfg:
                 task_cfg["cls"] = 0
         data["tasks"] = tasks
+
+        detect_cfg = tasks["detect"]
+        detect_nc = detect_cfg.get("nc")
+        names = data.get("names") or detect_cfg.get("names")
+        if names is None:
+            names = [str(i) for i in range(int(detect_nc or 1))]
+        data["names"] = check_class_names(names)
+        if detect_nc is None:
+            data["nc"] = len(data["names"])
+        else:
+            data["nc"] = int(detect_nc)
+            if len(data["names"]) != data["nc"]:
+                LOGGER.warning("multitask data.yaml names length does not match detect nc, using detect task names.")
+                names = detect_cfg.get("names") or [str(i) for i in range(data["nc"])]
+                data["names"] = check_class_names(names)
 
         data["train"] = tasks["detect"]["train"]
         data["val"] = tasks["detect"].get("val") or tasks["detect"].get("test")
@@ -88,7 +98,7 @@ class MultiTaskTrainer(DetectionTrainer):
                 )
                 loaders[task_name] = loader
                 weights[task_name] = len(dataset)
-                cls_offsets[task_name] = int(task_cfg.get("cls", 0))
+                cls_offsets[task_name] = 0
             return MultiTaskLoader(loaders, weights, cls_offsets)
 
         detect_cfg = self.data["tasks"]["detect"]

@@ -613,8 +613,44 @@ class MultiTaskModel(DetectionModel):
             LOGGER.info(f"Overriding model.yaml kpt_shape={cfg.get('kpt_shape')} with kpt_shape={data_kpt_shape}")
             cfg["kpt_shape"] = data_kpt_shape
         super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
-        self.kpt_shape = self.model[-1].kpt_shape
+        self.kpt_shape = getattr(self.model[-1], "kpt_shape", None)
+        if self.kpt_shape is None:
+            for m in self.model:
+                if isinstance(m, Pose):
+                    self.kpt_shape = m.kpt_shape
+                    break
         self.task = "multitask"
+
+    def _predict_once(self, x, profile=False, visualize=False, embed=None):
+        """Run a forward pass and aggregate outputs from Detect/Segment/Pose heads."""
+        y, dt, embeddings = [], [], []
+        outputs = {}
+        embed = frozenset(embed) if embed is not None else {-1}
+        max_idx = max(embed)
+        for m in self.model:
+            if m.f != -1:  # if not from previous layer
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+            if profile:
+                self._profile_one_layer(m, x, dt)
+            x = m(x)  # run
+            y.append(x if m.i in self.save else None)  # save output
+            if visualize:
+                feature_visualization(x, m.type, m.i, save_dir=visualize)
+            if isinstance(m, MultiTask):
+                outputs["detect"] = x
+                outputs["segment"] = x
+                outputs["pose"] = x
+            elif isinstance(m, Segment):
+                outputs["segment"] = x
+            elif isinstance(m, Pose):
+                outputs["pose"] = x
+            elif isinstance(m, Detect):
+                outputs["detect"] = x
+            if m.i in embed:
+                embeddings.append(torch.nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
+                if m.i == max_idx:
+                    return torch.unbind(torch.cat(embeddings, 1), dim=0)
+        return outputs if outputs else x
 
     def init_criterion(self):
         return v8MultiTaskLoss(self)

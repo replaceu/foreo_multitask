@@ -11,3 +11,17 @@ class MultiTaskValidator(DetectionValidator):
     def __init__(self, dataloader=None, save_dir=None, args=None, _callbacks=None) -> None:
         super().__init__(dataloader, save_dir, args, _callbacks)
         self.args.task = "multitask"
+
+    def postprocess(self, preds):
+        if isinstance(preds, dict) and "detect" in preds:
+            preds = preds["detect"]
+        if isinstance(preds, (list, tuple)):
+            preds0 = preds[0]
+            if isinstance(preds0, (list, tuple)):
+                preds0 = preds0[0]
+            preds = preds0
+        return super().postprocess(preds)
+
+    
+    
+
