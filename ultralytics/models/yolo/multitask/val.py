@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import copy
 
 import torch
+import torch.nn.functional as F
 
 from ultralytics.data import build_dataloader
 from ultralytics.models.yolo.detect import DetectionValidator
@@ -89,7 +90,8 @@ class _MultiTaskSegmentationValidator(SegmentationValidator):
         preds = DetectionValidator.postprocess(self, pred)
         # 4.以下逻辑用于将预测的掩码系数与原型相乘,生成最终的二进制掩码
         nm = proto.shape[1] # 原型掩码的通道数
-        imgsz = [4 * x for x in proto.shape[2:]] # 计算掩码图像尺寸(通常原型图是原图的1/4大小)
+        imgsz = [4 * x for x in proto.shape[2:]]
+        mask_size = imgsz if self.process is ops.process_mask_native else [s // 4 for s in imgsz] # 计算掩码图像尺寸(通常原型图是原图的1/4大小)
         for i, pred in enumerate(preds):
             # 从预测中提取额外的掩码系数(extra)
             extra = pred.pop("extra")
@@ -104,7 +106,26 @@ class _MultiTaskSegmentationValidator(SegmentationValidator):
                     device=pred["bboxes"].device,
                 )
             )
+            if pred["masks"].shape[-2:] != tuple(mask_size):
+                pred["masks"] = (
+                    F.interpolate(pred["masks"].float().unsqueeze(0), size=mask_size, mode="nearest")[0].byte()
+                    if pred["masks"].numel()
+                    else pred["masks"].new_zeros((0, *mask_size))
+                )
         return preds
+
+    def _process_batch(self, preds, batch):
+        """
+        Ensure predicted mask sizes match prepared ground-truth mask sizes before IoU.
+        """
+        if preds["masks"].shape[-2:] != batch["masks"].shape[-2:]:
+            target_size = batch["masks"].shape[-2:]
+            preds["masks"] = (
+                F.interpolate(preds["masks"].float().unsqueeze(0), size=target_size, mode="nearest")[0].byte()
+                if preds["masks"].numel()
+                else preds["masks"].new_zeros((0, *target_size))
+            )
+        return super()._process_batch(preds, batch)
 
 
 class _MultiTaskPoseValidator(PoseValidator):
