@@ -2,6 +2,9 @@
 path: /home/.local/foreo_multitask/datasets
 train: spot/train/images
 val: spot/val/images
+nc: 1
+names: [spot]
+kpt_shape: [10, 3]
 
 tasks:
   detect:

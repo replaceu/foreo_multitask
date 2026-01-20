@@ -210,6 +210,40 @@ class MultiTaskValidator(DetectionValidator):
         """
 
         # 如果trainer中没有定义任务配置,回退到普通的父类验证逻辑
+        if trainer is None and isinstance(self.dataloader, dict):
+            task_validators = {
+                "detect": _MultiTaskDetectValidator,
+                "segment": _MultiTaskSegmentationValidator,
+                "pose": _MultiTaskPoseValidator,
+            }
+            results = {}
+            fitness = None
+            for task_name, validator_cls in task_validators.items():
+                loader = self.dataloader.get(task_name)
+                if loader is None:
+                    continue
+                validator = validator_cls(
+                    dataloader=loader,
+                    save_dir=self.save_dir / task_name,
+                    args=copy(self.args),
+                    _callbacks=self.callbacks,
+                )
+                task_results = validator(trainer=None, model=model)
+                if not task_results:
+                    continue
+                if task_name == "detect":
+                    self.metrics = validator.metrics
+                    fitness = task_results.get("fitness")
+                    results.update(task_results)
+                else:
+                    for key, value in task_results.items():
+                        if key == "fitness":
+                            continue
+                        results[f"{task_name}/{key}"] = value
+            if fitness is not None:
+                results["fitness"] = fitness
+            return results
+
         if trainer is None or "tasks" not in getattr(trainer, "data", {}):
             return super().__call__(trainer, model)
         
