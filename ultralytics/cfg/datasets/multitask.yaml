@@ -4,20 +4,20 @@ train: spot/train/images
 val: spot/val/images
 
 tasks:
-  spot:
+  detect:
     task: detect
     train: spot/train/images
     val: spot/val/images
     nc: 1
     names: [spot]
-  luna:
+  pose:
     task: pose
     train: luna/train/images
     val: luna/val/images
     nc: 1
     names: [luna]
     kpt_shape: [10, 3]
-  wrinkle:
+  segment:
     task: segment
     train: wrinkle/train/images
     val: wrinkle/val/images
