@@ -1,5 +1,5 @@
 # ultralytics/cfg/datasets/multitask.yaml
-path: /home/.local/datasets/foreo_multitask
+path: /home/.local/foreo_multitask/datasets
 train: spot/train/images
 val: spot/val/images
 
@@ -12,14 +12,14 @@ tasks:
     names: [spot]
   pose:
     task: pose
-    train: luna/train/images
-    val: luna/val/images
+    train: luna/images/train
+    val: luna/images/val
     nc: 1
     names: [luna]
     kpt_shape: [10, 3]
   segment:
     task: segment
     train: wrinkle/train/images
-    val: wrinkle/val/images
+    val: wrinkle/valid/images
     nc: 1
     names: [wrinkle]

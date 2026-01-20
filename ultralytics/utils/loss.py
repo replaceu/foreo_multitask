@@ -671,7 +671,16 @@ class v8PoseLoss(v8DetectionLoss):
     def __init__(self, model, tal_topk: int = 10, tal_topk2: int = 10):  # model must be de-paralleled
         """Initialize v8PoseLoss with model parameters and keypoint-specific loss functions."""
         super().__init__(model, tal_topk, tal_topk2)
-        self.kpt_shape = model.model[-1].kpt_shape
+        if hasattr(model, "kpt_shape") and model.kpt_shape is not None:
+            self.kpt_shape = model.kpt_shape
+        else:
+            self.kpt_shape = None
+            for m in model.model:
+                if isinstance(m, Pose):
+                    self.kpt_shape = m.kpt_shape
+                    break
+            if self.kpt_shape is None:
+                raise AttributeError("Pose head not found; kpt_shape is unavailable.")
         self.bce_pose = nn.BCEWithLogitsLoss()
         is_pose = self.kpt_shape == [17, 3]
         nkpt = self.kpt_shape[0]  # number of keypoints
