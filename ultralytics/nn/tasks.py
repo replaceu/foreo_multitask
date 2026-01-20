@@ -636,16 +636,21 @@ class MultiTaskModel(DetectionModel):
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
-            if isinstance(m, MultiTask):
-                outputs["detect"] = x
-                outputs["segment"] = x
-                outputs["pose"] = x
-            elif isinstance(m, Segment):
-                outputs["segment"] = x
-            elif isinstance(m, Pose):
-                outputs["pose"] = x
-            elif isinstance(m, Detect):
-                outputs["detect"] = x
+              if isinstance(m, MultiTask):
+                  outputs["detect"] = x
+                  outputs["segment"] = x
+                  outputs["pose"] = x
+              elif isinstance(m, Segment):
+                  outputs["segment"] = x
+              elif isinstance(m, Pose):
+                  outputs["pose"] = x
+              elif isinstance(m, Detect):
+                  outputs["detect"] = x
+              if "feats" not in outputs:
+                  if isinstance(x, dict) and "feats" in x:
+                      outputs["feats"] = x["feats"]
+                  elif isinstance(x, (list, tuple)) and len(x) > 1 and isinstance(x[1], dict) and "feats" in x[1]:
+                      outputs["feats"] = x[1]["feats"]
             if m.i in embed:
                 embeddings.append(torch.nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
                 if m.i == max_idx:
