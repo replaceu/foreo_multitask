@@ -221,6 +221,8 @@ class MultiTaskTrainer(DetectionTrainer):
 
     def _loss_items_to_list(self, loss_items):
         values = loss_items.tolist() if hasattr(loss_items, "tolist") else list(loss_items)
+        if len(values) >= 7:
+            return values[:7]
         det = (values + [0.0] * 3)[:3]
         # v8MultiTaskLoss provides a single seg loss; pad if more seg names are configured.
         seg_values = values[3:4]

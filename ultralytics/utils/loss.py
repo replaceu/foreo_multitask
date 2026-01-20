@@ -85,6 +85,56 @@ class FocalLoss(nn.Module):
         return loss.mean(1).sum()
 
 
+class FocalLossV1(nn.Module):
+    """Numerically-stable focal loss for dense logits."""
+
+    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: str = "mean"):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        probs = torch.sigmoid(logits)
+        coeff = torch.abs(labels - probs).pow(self.gamma).neg()
+        log_probs = torch.where(logits >= 0, F.softplus(logits, -1, 50), logits - F.softplus(logits, 1, 50))
+        log_1_probs = torch.where(logits >= 0, -logits + F.softplus(logits, -1, 50), -F.softplus(logits, 1, 50))
+        loss = labels * self.alpha * log_probs + (1.0 - labels) * (1.0 - self.alpha) * log_1_probs
+        loss = loss * coeff
+        if self.reduction == "mean":
+            loss = loss.mean()
+        elif self.reduction == "sum":
+            loss = loss.sum()
+        return loss
+
+
+class TverskyLoss(nn.Module):
+    """Tversky loss for imbalanced segmentation."""
+
+    def __init__(self, smooth: float = 1.0, alpha: float = 0.7, reduction: str = "mean"):
+        super().__init__()
+        self.smooth = smooth
+        self.alpha = alpha
+        self.reduction = reduction
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        probs = torch.sigmoid(logits)
+        probs = probs.view(probs.shape[0], -1)
+        labels = labels.view(labels.shape[0], -1)
+        true_pos = (labels * probs).sum(1)
+        false_neg = (labels * (1.0 - probs)).sum(1)
+        false_pos = ((1.0 - labels) * probs).sum(1)
+        tversky = (true_pos + self.smooth) / (
+            true_pos + self.alpha * false_neg + (1.0 - self.alpha) * false_pos + self.smooth
+        )
+        loss = 1.0 - tversky
+        if self.reduction == "mean":
+            return loss.mean()
+        if self.reduction == "sum":
+            return loss.sum()
+        return loss
+
+
 class DFLoss(nn.Module):
     """Criterion class for computing Distribution Focal Loss (DFL)."""
 
@@ -475,7 +525,10 @@ class v8SegmentationLoss(v8DetectionLoss):
         """Initialize the v8SegmentationLoss class with model parameters and mask overlap setting."""
         super().__init__(model, tal_topk, tal_topk2)
         self.overlap = model.args.overlap_mask
+        self.focal_loss = FocalLossV1(reduction="none")
+        self.tversky_loss = TverskyLoss(reduction="none")
         self.bcedice_loss = BCEDiceLoss(weight_bce=0.5, weight_dice=0.5)
+        self.seg_components = None
 
     def loss(self, preds: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """Calculate and return the combined loss for detection and segmentation."""
@@ -500,7 +553,7 @@ class v8SegmentationLoss(v8DetectionLoss):
             imgsz = (
                 torch.tensor(preds["feats"][0].shape[2:], device=self.device, dtype=pred_masks.dtype) * self.stride[0]
             )
-            loss[1] = self.calculate_segmentation_loss(
+            seg_tversky, seg_focal = self.calculate_segmentation_loss(
                 fg_mask,
                 masks,
                 target_gt_idx,
@@ -510,6 +563,10 @@ class v8SegmentationLoss(v8DetectionLoss):
                 pred_masks,
                 imgsz,
             )
+            seg_tversky *= self.hyp.box
+            seg_focal *= self.hyp.box
+            self.seg_components = (seg_tversky, seg_focal)
+            loss[1] = seg_tversky + seg_focal
             if pred_semseg is not None:
                 sem_masks = batch["sem_masks"].to(self.device)  # NxHxW
                 mask_zero = sem_masks == 0  # NxHxW
@@ -521,35 +578,24 @@ class v8SegmentationLoss(v8DetectionLoss):
         # WARNING: lines below prevent Multi-GPU DDP 'unused gradient' PyTorch errors, do not remove
         else:
             loss[1] += (proto * 0).sum() + (pred_masks * 0).sum()  # inf sums may lead to nan loss
+            self.seg_components = (loss.new_zeros(()), loss.new_zeros(()))
             if pred_semseg is not None:
                 loss[4] += (pred_semseg * 0).sum()
 
-        loss[1] *= self.hyp.box  # seg gain
         return loss * batch_size, loss.detach()  # loss(box, cls, dfl)
 
-    @staticmethod
     def single_mask_loss(
-        gt_mask: torch.Tensor, pred: torch.Tensor, proto: torch.Tensor, xyxy: torch.Tensor, area: torch.Tensor
-    ) -> torch.Tensor:
-        """Compute the instance segmentation loss for a single image.
-
-        Args:
-            gt_mask (torch.Tensor): Ground truth mask of shape (N, H, W), where N is the number of objects.
-            pred (torch.Tensor): Predicted mask coefficients of shape (N, 32).
-            proto (torch.Tensor): Prototype masks of shape (32, H, W).
-            xyxy (torch.Tensor): Ground truth bounding boxes in xyxy format, normalized to [0, 1], of shape (N, 4).
-            area (torch.Tensor): Area of each ground truth bounding box of shape (N,).
-
-        Returns:
-            (torch.Tensor): The calculated mask loss for a single image.
-
-        Notes:
-            The function uses the equation pred_mask = torch.einsum('in,nhw->ihw', pred, proto) to produce the
-            predicted masks from the prototype masks and predicted mask coefficients.
-        """
+        self, gt_mask: torch.Tensor, pred: torch.Tensor, proto: torch.Tensor, xyxy: torch.Tensor, area: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute the instance segmentation loss for a single image."""
         pred_mask = torch.einsum("in,nhw->ihw", pred, proto)  # (n, 32) @ (32, 80, 80) -> (n, 80, 80)
-        loss = F.binary_cross_entropy_with_logits(pred_mask, gt_mask, reduction="none")
-        return (crop_mask(loss, xyxy).mean(dim=(1, 2)) / area).sum()
+        pred_mask = crop_mask(pred_mask, xyxy)
+        gt_mask = crop_mask(gt_mask.clone(), xyxy)
+        tv_loss = self.tversky_loss(pred_mask, gt_mask)
+        fl_loss = self.focal_loss(pred_mask, gt_mask)
+        if fl_loss.ndim > 1:
+            fl_loss = fl_loss.mean(dim=tuple(range(1, fl_loss.ndim)))
+        return (tv_loss / area).sum(), (fl_loss / area).sum()
 
     def calculate_segmentation_loss(
         self,
@@ -561,7 +607,7 @@ class v8SegmentationLoss(v8DetectionLoss):
         proto: torch.Tensor,
         pred_masks: torch.Tensor,
         imgsz: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Calculate the loss for instance segmentation.
 
         Args:
@@ -583,7 +629,8 @@ class v8SegmentationLoss(v8DetectionLoss):
                 pred_mask = torch.einsum('in,nhw->ihw', pred, proto)  # (i, 32) @ (32, 160, 160) -> (i, 160, 160)
         """
         _, _, mask_h, mask_w = proto.shape
-        loss = 0
+        tv_loss = torch.zeros(1, device=proto.device)
+        fl_loss = torch.zeros(1, device=proto.device)
 
         # Normalize to 0-1
         target_bboxes_normalized = target_bboxes / imgsz[[1, 0, 1, 0]]
@@ -603,16 +650,19 @@ class v8SegmentationLoss(v8DetectionLoss):
                     gt_mask = gt_mask.float()
                 else:
                     gt_mask = masks[batch_idx.view(-1) == i][mask_idx]
-
-                loss += self.single_mask_loss(
+                tv_i, fl_i = self.single_mask_loss(
                     gt_mask, pred_masks_i[fg_mask_i], proto_i, mxyxy_i[fg_mask_i], marea_i[fg_mask_i]
                 )
+                tv_loss += tv_i
+                fl_loss += fl_i
 
             # WARNING: lines below prevents Multi-GPU DDP 'unused gradient' PyTorch errors, do not remove
             else:
-                loss += (proto * 0).sum() + (pred_masks * 0).sum()  # inf sums may lead to nan loss
+                tv_loss += (proto * 0).sum() + (pred_masks * 0).sum()  # inf sums may lead to nan loss
+                fl_loss += (proto * 0).sum() + (pred_masks * 0).sum()
 
-        return loss / fg_mask.sum()
+        denom = fg_mask.sum().clamp(min=1)
+        return tv_loss / denom, fl_loss / denom
 
 
 class v8PoseLoss(v8DetectionLoss):
@@ -1262,22 +1312,27 @@ class v8MultiTaskLoss:
 
         if task == "segment":
             loss, _ = self.seg_loss(preds, batch)
-            full = loss.new_zeros(6)
+            full = loss.new_zeros(7)
             full[0] = loss[0]  # box
             full[1] = loss[2]  # cls
             full[2] = loss[3]  # dfl
-            full[3] = loss[1]  # seg
+            seg_components = getattr(self.seg_loss, "seg_components", None)
+            if seg_components is not None:
+                full[3] = seg_components[0]  # tversky
+                full[4] = seg_components[1]  # focal
+            else:
+                full[3] = loss[1]  # seg
         elif task == "pose":
             loss, _ = self.pose_loss(preds, batch)
-            full = loss.new_zeros(6)
+            full = loss.new_zeros(7)
             full[0] = loss[0]  # box
             full[1] = loss[3]  # cls
             full[2] = loss[4]  # dfl
-            full[4] = loss[1]  # pose
-            full[5] = loss[2]  # kobj
+            full[5] = loss[1]  # pose
+            full[6] = loss[2]  # kobj
         else:
             loss, _ = self.det_loss(preds, batch)
-            full = loss.new_zeros(6)
+            full = loss.new_zeros(7)
             full[0] = loss[0]
             full[1] = loss[1]
             full[2] = loss[2]
