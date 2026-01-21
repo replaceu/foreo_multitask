@@ -208,7 +208,7 @@ class MultiTaskTrainer(DetectionTrainer):
 
         self.loss_names = {
             "det": ["box_loss", "cls_loss", "dfl_loss"],
-            "seg": ["Tv_loss", "FL_loss"],
+            "seg": ["seg_loss"],
             "pose": ["pose_loss", "kobj_loss"],
         }
         return MultiTaskValidator(self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks)

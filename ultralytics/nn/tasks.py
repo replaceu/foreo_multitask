@@ -613,13 +613,82 @@ class MultiTaskModel(DetectionModel):
             LOGGER.info(f"Overriding model.yaml kpt_shape={cfg.get('kpt_shape')} with kpt_shape={data_kpt_shape}")
             cfg["kpt_shape"] = data_kpt_shape
         super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
-        self.kpt_shape = getattr(self.model[-1], "kpt_shape", None)
+        self.heads = self._find_heads()
+        self.kpt_shape = None
+        pose_head = self.heads.get("pose")
+        if pose_head is not None and hasattr(pose_head, "kpt_shape"):
+            self.kpt_shape = pose_head.kpt_shape
         if self.kpt_shape is None:
-            for m in self.model:
-                if isinstance(m, Pose):
-                    self.kpt_shape = m.kpt_shape
-                    break
+            self.kpt_shape = getattr(self.model[-1], "kpt_shape", None)
+        self._init_head_strides(ch)
         self.task = "multitask"
+
+    def _find_heads(self) -> dict[str, nn.Module]:
+        heads: dict[str, nn.Module] = {}
+        for m in self.model:
+            name = m.__class__.__name__
+            if name == "Detect":
+                heads.setdefault("detect", m)
+            elif name == "Segment":
+                heads.setdefault("segment", m)
+            elif name == "Pose":
+                heads.setdefault("pose", m)
+            elif name == "MultiTask":
+                heads.setdefault("detect", m)
+                heads.setdefault("segment", m)
+                heads.setdefault("pose", m)
+        return heads
+
+    @staticmethod
+    def _extract_pred_dict(out):
+        if isinstance(out, dict):
+            return out
+        if isinstance(out, (list, tuple)):
+            for item in reversed(out):
+                if isinstance(item, dict):
+                    return item
+        return None
+
+    def _init_head_strides(self, ch: int) -> None:
+        if not self.heads:
+            return
+        device = next(self.parameters()).device
+        s = 256  # 2x min stride
+        dummy = torch.zeros(1, ch, s, s, device=device)
+        self.model.eval()
+        for head in dict.fromkeys(self.heads.values()).values():
+            head.training = True
+        outputs = self.predict(dummy)
+        seen = set()
+        for name, head in self.heads.items():
+            if id(head) in seen:
+                continue
+            seen.add(id(head))
+            out = outputs.get(name) if isinstance(outputs, dict) else outputs
+            preds = self._extract_pred_dict(out)
+            if preds is None or "feats" not in preds:
+                continue
+            head.inplace = self.inplace
+            head.stride = torch.tensor([s / x.shape[-2] for x in preds["feats"]], device=device)
+            head.bias_init()
+        if "detect" in self.heads and getattr(self.heads["detect"], "stride", None) is not None:
+            self.stride = self.heads["detect"].stride
+        self.model.train()
+
+    def _apply(self, fn):
+        self = super()._apply(fn)
+        seen = set()
+        for head in getattr(self, "heads", {}).values():
+            if id(head) in seen:
+                continue
+            seen.add(id(head))
+            if hasattr(head, "stride"):
+                head.stride = fn(head.stride)
+            if hasattr(head, "anchors"):
+                head.anchors = fn(head.anchors)
+            if hasattr(head, "strides"):
+                head.strides = fn(head.strides)
+        return self
 
     def _predict_once(self, x, profile=False, visualize=False, embed=None):
         """Run a forward pass and aggregate outputs from Detect/Segment/Pose heads."""
@@ -646,11 +715,6 @@ class MultiTaskModel(DetectionModel):
                 outputs["pose"] = x
             elif isinstance(m, Detect):
                 outputs["detect"] = x
-            if "feats" not in outputs:
-                if isinstance(x, dict) and "feats" in x:
-                    outputs["feats"] = x["feats"]
-                elif isinstance(x, (list, tuple)) and len(x) > 1 and isinstance(x[1], dict) and "feats" in x[1]:
-                    outputs["feats"] = x[1]["feats"]
             if m.i in embed:
                 embeddings.append(torch.nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
                 if m.i == max_idx:

@@ -67,6 +67,6 @@ head:
 
   - [[16, 19, 22], 1, Detect, [nc]] # 39 Detect(P3, P4, P5)
   
-  - [[32], 1, Pose, [1, kpt_shape]] # luna-pose
+  - [[38, 36, 33], 1, Pose, [1, kpt_shape]] # luna-pose
 
-  - [[28], 1, Segment, [1, 32, 256]] # wrinkle-segmentation
+  - [[30, 28, 25], 1, Segment, [1, 32, 256]] # wrinkle-segmentation

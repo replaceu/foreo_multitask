@@ -383,12 +383,18 @@ class KeypointLoss(nn.Module):
 class v8DetectionLoss:
     """Criterion class for computing training losses for YOLOv8 object detection."""
 
-    def __init__(self, model, tal_topk: int = 10, tal_topk2: int | None = None):  # model must be de-paralleled
+    def __init__(
+        self,
+        model,
+        tal_topk: int = 10,
+        tal_topk2: int | None = None,
+        head: nn.Module | None = None,
+    ):  # model must be de-paralleled
         """Initialize v8DetectionLoss with model parameters and task-aligned assignment settings."""
         device = next(model.parameters()).device  # get model device
         h = model.args  # hyperparameters
 
-        m = model.model[-1]  # Detect() module
+        m = head or model.model[-1]  # Detect() module
         self.bce = nn.BCEWithLogitsLoss(reduction="none")
         self.hyp = h
         self.stride = m.stride  # model strides
@@ -521,14 +527,18 @@ class v8DetectionLoss:
 class v8SegmentationLoss(v8DetectionLoss):
     """Criterion class for computing training losses for YOLOv8 segmentation."""
 
-    def __init__(self, model, tal_topk: int = 10, tal_topk2: int | None = None):  # model must be de-paralleled
+    def __init__(
+        self,
+        model,
+        tal_topk: int = 10,
+        tal_topk2: int | None = None,
+        head: nn.Module | None = None,
+    ):  # model must be de-paralleled
         """Initialize the v8SegmentationLoss class with model parameters and mask overlap setting."""
-        super().__init__(model, tal_topk, tal_topk2)
+        super().__init__(model, tal_topk, tal_topk2, head=head)
         self.overlap = model.args.overlap_mask
-        self.focal_loss = FocalLossV1(reduction="none")
-        self.tversky_loss = TverskyLoss(reduction="none")
+        self.mask_loss = nn.BCEWithLogitsLoss(reduction="none")
         self.bcedice_loss = BCEDiceLoss(weight_bce=0.5, weight_dice=0.5)
-        self.seg_components = None
 
     def loss(self, preds: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """Calculate and return the combined loss for detection and segmentation."""
@@ -553,7 +563,7 @@ class v8SegmentationLoss(v8DetectionLoss):
             imgsz = (
                 torch.tensor(preds["feats"][0].shape[2:], device=self.device, dtype=pred_masks.dtype) * self.stride[0]
             )
-            seg_tversky, seg_focal = self.calculate_segmentation_loss(
+            seg_loss = self.calculate_segmentation_loss(
                 fg_mask,
                 masks,
                 target_gt_idx,
@@ -563,10 +573,8 @@ class v8SegmentationLoss(v8DetectionLoss):
                 pred_masks,
                 imgsz,
             )
-            seg_tversky *= self.hyp.box
-            seg_focal *= self.hyp.box
-            self.seg_components = (seg_tversky, seg_focal)
-            loss[1] = seg_tversky + seg_focal
+            seg_loss *= self.hyp.box
+            loss[1] = seg_loss
             if pred_semseg is not None:
                 sem_masks = batch["sem_masks"].to(self.device)  # NxHxW
                 mask_zero = sem_masks == 0  # NxHxW
@@ -578,7 +586,6 @@ class v8SegmentationLoss(v8DetectionLoss):
         # WARNING: lines below prevent Multi-GPU DDP 'unused gradient' PyTorch errors, do not remove
         else:
             loss[1] += (proto * 0).sum() + (pred_masks * 0).sum()  # inf sums may lead to nan loss
-            self.seg_components = (loss.new_zeros(()), loss.new_zeros(()))
             if pred_semseg is not None:
                 loss[4] += (pred_semseg * 0).sum()
 
@@ -591,11 +598,10 @@ class v8SegmentationLoss(v8DetectionLoss):
         pred_mask = torch.einsum("in,nhw->ihw", pred, proto)  # (n, 32) @ (32, 80, 80) -> (n, 80, 80)
         pred_mask = crop_mask(pred_mask, xyxy)
         gt_mask = crop_mask(gt_mask.clone(), xyxy)
-        tv_loss = self.tversky_loss(pred_mask, gt_mask)
-        fl_loss = self.focal_loss(pred_mask, gt_mask)
-        if fl_loss.ndim > 1:
-            fl_loss = fl_loss.mean(dim=tuple(range(1, fl_loss.ndim)))
-        return (tv_loss / area).sum(), (fl_loss / area).sum()
+        bce_loss = self.mask_loss(pred_mask, gt_mask)
+        if bce_loss.ndim > 1:
+            bce_loss = bce_loss.mean(dim=tuple(range(1, bce_loss.ndim)))
+        return (bce_loss / area).sum()
 
     def calculate_segmentation_loss(
         self,
@@ -629,8 +635,7 @@ class v8SegmentationLoss(v8DetectionLoss):
                 pred_mask = torch.einsum('in,nhw->ihw', pred, proto)  # (i, 32) @ (32, 160, 160) -> (i, 160, 160)
         """
         _, _, mask_h, mask_w = proto.shape
-        tv_loss = torch.zeros(1, device=proto.device)
-        fl_loss = torch.zeros(1, device=proto.device)
+        seg_loss = torch.zeros(1, device=proto.device)
 
         # Normalize to 0-1
         target_bboxes_normalized = target_bboxes / imgsz[[1, 0, 1, 0]]
@@ -650,37 +655,43 @@ class v8SegmentationLoss(v8DetectionLoss):
                     gt_mask = gt_mask.float()
                 else:
                     gt_mask = masks[batch_idx.view(-1) == i][mask_idx]
-                tv_i, fl_i = self.single_mask_loss(
+                seg_i = self.single_mask_loss(
                     gt_mask, pred_masks_i[fg_mask_i], proto_i, mxyxy_i[fg_mask_i], marea_i[fg_mask_i]
                 )
-                tv_loss += tv_i
-                fl_loss += fl_i
+                seg_loss += seg_i
 
             # WARNING: lines below prevents Multi-GPU DDP 'unused gradient' PyTorch errors, do not remove
             else:
-                tv_loss += (proto * 0).sum() + (pred_masks * 0).sum()  # inf sums may lead to nan loss
-                fl_loss += (proto * 0).sum() + (pred_masks * 0).sum()
+                seg_loss += (proto * 0).sum() + (pred_masks * 0).sum()  # inf sums may lead to nan loss
 
         denom = fg_mask.sum().clamp(min=1)
-        return tv_loss / denom, fl_loss / denom
+        return seg_loss / denom
 
 
 class v8PoseLoss(v8DetectionLoss):
     """Criterion class for computing training losses for YOLOv8 pose estimation."""
 
-    def __init__(self, model, tal_topk: int = 10, tal_topk2: int = 10):  # model must be de-paralleled
+    def __init__(
+        self,
+        model,
+        tal_topk: int = 10,
+        tal_topk2: int = 10,
+        head: nn.Module | None = None,
+    ):  # model must be de-paralleled
         """Initialize v8PoseLoss with model parameters and keypoint-specific loss functions."""
-        super().__init__(model, tal_topk, tal_topk2)
-        if hasattr(model, "kpt_shape") and model.kpt_shape is not None:
+        super().__init__(model, tal_topk, tal_topk2, head=head)
+        self.kpt_shape = None
+        if head is not None and hasattr(head, "kpt_shape"):
+            self.kpt_shape = head.kpt_shape
+        if self.kpt_shape is None and hasattr(model, "kpt_shape") and model.kpt_shape is not None:
             self.kpt_shape = model.kpt_shape
-        else:
-            self.kpt_shape = None
+        if self.kpt_shape is None:
             for m in model.model:
                 if isinstance(m, Pose):
                     self.kpt_shape = m.kpt_shape
                     break
-            if self.kpt_shape is None:
-                raise AttributeError("Pose head not found; kpt_shape is unavailable.")
+        if self.kpt_shape is None:
+            raise AttributeError("Pose head not found; kpt_shape is unavailable.")
         self.bce_pose = nn.BCEWithLogitsLoss()
         is_pose = self.kpt_shape == [17, 3]
         nkpt = self.kpt_shape[0]  # number of keypoints
@@ -1296,9 +1307,19 @@ class v8MultiTaskLoss:
     """Criterion for multi-task training across detect/segment/pose."""
 
     def __init__(self, model, tal_topk: int = 10, tal_topk2: int | None = 10):
-        self.det_loss = v8DetectionLoss(model, tal_topk, tal_topk2)
-        self.seg_loss = v8SegmentationLoss(model, tal_topk, tal_topk2)
-        self.pose_loss = v8PoseLoss(model, tal_topk, tal_topk2)
+        def _find_head(name: str):
+            for m in model.model:
+                if m.__class__.__name__ == name:
+                    return m
+            return None
+
+        det_head = _find_head("Detect")
+        seg_head = _find_head("Segment")
+        pose_head = _find_head("Pose")
+
+        self.det_loss = v8DetectionLoss(model, tal_topk, tal_topk2, head=det_head)
+        self.seg_loss = v8SegmentationLoss(model, tal_topk, tal_topk2, head=seg_head)
+        self.pose_loss = v8PoseLoss(model, tal_topk, tal_topk2, head=pose_head)
         self.device = self.det_loss.device
 
     def __call__(self, preds: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]):
@@ -1321,27 +1342,22 @@ class v8MultiTaskLoss:
 
         if task == "segment":
             loss, _ = self.seg_loss(preds, batch)
-            full = loss.new_zeros(7)
+            full = loss.new_zeros(6)
             full[0] = loss[0]  # box
             full[1] = loss[2]  # cls
             full[2] = loss[3]  # dfl
-            seg_components = getattr(self.seg_loss, "seg_components", None)
-            if seg_components is not None:
-                full[3] = seg_components[0]  # tversky
-                full[4] = seg_components[1]  # focal
-            else:
-                full[3] = loss[1]  # seg
+            full[3] = loss[1]  # seg
         elif task == "pose":
             loss, _ = self.pose_loss(preds, batch)
-            full = loss.new_zeros(7)
+            full = loss.new_zeros(6)
             full[0] = loss[0]  # box
             full[1] = loss[3]  # cls
             full[2] = loss[4]  # dfl
-            full[5] = loss[1]  # pose
-            full[6] = loss[2]  # kobj
+            full[4] = loss[1]  # pose
+            full[5] = loss[2]  # kobj
         else:
             loss, _ = self.det_loss(preds, batch)
-            full = loss.new_zeros(7)
+            full = loss.new_zeros(6)
             full[0] = loss[0]
             full[1] = loss[1]
             full[2] = loss[2]
