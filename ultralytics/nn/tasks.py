@@ -715,6 +715,10 @@ class MultiTaskModel(DetectionModel):
                 outputs["pose"] = x
             elif isinstance(m, Detect):
                 outputs["detect"] = x
+            if "feats" not in outputs:
+                preds = self._extract_pred_dict(x)
+                if preds is not None and "feats" in preds:
+                    outputs["feats"] = preds["feats"]
             if m.i in embed:
                 embeddings.append(torch.nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
                 if m.i == max_idx:
