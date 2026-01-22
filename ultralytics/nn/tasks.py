@@ -657,7 +657,8 @@ class MultiTaskModel(DetectionModel):
         dummy = torch.zeros(1, ch, s, s, device=device)
         self.model.eval()
         for head in dict.fromkeys(self.heads.values()).values():
-            head.training = True
+            if head is not None:
+                head.training = True
         outputs = self.predict(dummy)
         seen = set()
         for name, head in self.heads.items():

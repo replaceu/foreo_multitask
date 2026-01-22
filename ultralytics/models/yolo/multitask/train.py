@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import copy
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,30 @@ from ultralytics.models.yolo.detect import DetectionTrainer
 from ultralytics.nn.autobackend import check_class_names
 from ultralytics.nn.tasks import MultiTaskModel
 from ultralytics.utils import DATASETS_DIR, DEFAULT_CFG, LOGGER, RANK, YAML
+
+
+class _LimitedLoader:
+    """Wrap a dataloader to cap the number of yielded batches."""
+
+    def __init__(self, loader, max_batches: int):
+        self._loader = loader
+        self._max_batches = max_batches
+        self.dataset = loader.dataset
+        self.num_workers = getattr(loader, "num_workers", 0)
+        self.sampler = getattr(loader, "sampler", None)
+
+    def __len__(self) -> int:
+        return min(len(self._loader), self._max_batches)
+
+    def __iter__(self):
+        return islice(self._loader, self._max_batches)
+
+    def reset(self):
+        if hasattr(self._loader, "reset"):
+            self._loader.reset()
+
+    def __getattr__(self, name):
+        return getattr(self._loader, name)
 
 
 class MultiTaskTrainer(DetectionTrainer):
@@ -150,7 +175,7 @@ class MultiTaskTrainer(DetectionTrainer):
                     drop_last=self.args.compile,
                 )
                 loaders[task_name] = loader
-                weights[task_name] = len(dataset) # 权重通常取决于数据量大小
+                weights[task_name] = 1
                 cls_offsets[task_name] = 0
             # 返回自定义的MultiTaskLoader,它负责在训练循环中从不同任务的loader中采样(抽取数据)
             return MultiTaskLoader(loaders, weights, cls_offsets)
@@ -173,6 +198,11 @@ class MultiTaskTrainer(DetectionTrainer):
                 rank=rank,
                 drop_last=False,
             )
+        if loaders:
+            min_batches = min(len(loader) for loader in loaders.values())
+            for task_name, loader in list(loaders.items()):
+                if len(loader) > min_batches:
+                    loaders[task_name] = _LimitedLoader(loader, min_batches)
         return loaders
 
     def get_model(self, cfg: str | None = None, weights: str | None = None, verbose: bool = True):
