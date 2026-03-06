@@ -15,18 +15,14 @@ from ultralytics.utils import LOCAL_RANK, LOGGER, ops
 
 
 def _select_task_preds(preds, task):
-    """
-    辅助函数:从多任务模型的预测结果字典中提取指定任务的预测值,如果预测结果是字典(通常是这种情况),则按照任务名获取,否则直接返回
-    """
+    """辅助函数:从多任务模型的预测结果字典中提取指定任务的预测值,如果预测结果是字典(通常是这种情况),则按照任务名获取,否则直接返回."""
     if isinstance(preds, dict):
         return preds.get(task)
     return preds
 
 
 def _split_pred_proto(preds):
-    """
-    辅助函数:用于分割预测结果(pred)和原型掩码(proto),这主要用于分割任务,因为分割任务的输出包含检测框预测和用于生成掩码的原型向量
-    """
+    """辅助函数:用于分割预测结果(pred)和原型掩码(proto),这主要用于分割任务,因为分割任务的输出包含检测框预测和用于生成掩码的原型向量."""
     proto = None
     pred = preds
     # 检测预测结果是否为列表或元组
@@ -44,16 +40,13 @@ def _split_pred_proto(preds):
 
 
 class _MultiTaskDetectValidator(DetectionValidator):
-    """
-    多任务场景下的检测任务验证器,继承自DetectionValidator
-    """
+    """多任务场景下的检测任务验证器,继承自DetectionValidator."""
+
     def postprocess(self, preds):
-        """
-        重写后处理方法
+        """重写后处理方法.
 
         先从多任务的复杂输出中提取出'detect'任务的预测部分,然后再调用父类的postprocess进行标准的检测后处理(NMS等)
         """
-
         # 1.提取检测任务的预测
         preds = _select_task_preds(preds, "detect")
 
@@ -63,35 +56,34 @@ class _MultiTaskDetectValidator(DetectionValidator):
             if isinstance(preds0, (list, tuple)):
                 preds0 = preds0[0]
             preds = preds0
-        
+
         # 3.调用父类DetectionValidator的后处理
         return super().postprocess(preds)
 
 
 class _MultiTaskSegmentationValidator(SegmentationValidator):
-    """
-    多任务场景下的分割任务验证器,继承自SegmentationValidator
-    """
+    """多任务场景下的分割任务验证器,继承自SegmentationValidator."""
+
     def postprocess(self, preds):
-        """
-        重写后处理方法
+        """重写后处理方法.
 
         需要处理掩码原型(proto)和检测框系数的结合
         """
-
         # 1.提取分割任务的预测
         preds = _select_task_preds(preds, "segment")
         # 2.分离预测框/系数(pred)和原型掩码(proto)
         pred, proto = _split_pred_proto(preds)
         if pred is None or proto is None:
             raise ValueError("Missing segment predictions for multitask validation.")
-        
+
         # 3.首先使用检测验证器的方法处理边界框(如NMS)
         preds = DetectionValidator.postprocess(self, pred)
         # 4.以下逻辑用于将预测的掩码系数与原型相乘,生成最终的二进制掩码
-        nm = proto.shape[1] # 原型掩码的通道数
+        nm = proto.shape[1]  # 原型掩码的通道数
         imgsz = [4 * x for x in proto.shape[2:]]
-        mask_size = imgsz if self.process is ops.process_mask_native else [s // 4 for s in imgsz] # 计算掩码图像尺寸(通常原型图是原图的1/4大小)
+        mask_size = (
+            imgsz if self.process is ops.process_mask_native else [s // 4 for s in imgsz]
+        )  # 计算掩码图像尺寸(通常原型图是原图的1/4大小)
         for i, pred in enumerate(preds):
             # 从预测中提取额外的掩码系数(extra)
             extra = pred.pop("extra")
@@ -115,9 +107,7 @@ class _MultiTaskSegmentationValidator(SegmentationValidator):
         return preds
 
     def _process_batch(self, preds, batch):
-        """
-        Ensure predicted mask sizes match prepared ground-truth mask sizes before IoU.
-        """
+        """Ensure predicted mask sizes match prepared ground-truth mask sizes before IoU."""
         if preds["masks"].shape[-2:] != batch["masks"].shape[-2:]:
             target_size = batch["masks"].shape[-2:]
             preds["masks"] = (
@@ -129,16 +119,13 @@ class _MultiTaskSegmentationValidator(SegmentationValidator):
 
 
 class _MultiTaskPoseValidator(PoseValidator):
-    """
-    多任务场景下的姿态估计(关键点)验证器,继承自PoseValidator
-    """
+    """多任务场景下的姿态估计(关键点)验证器,继承自PoseValidator."""
+
     def postprocess(self, preds):
-        """
-        重写后处理方法
+        """重写后处理方法.
 
         需要从预测结果中解析出关键点坐标
         """
-
         # 1.提取姿态任务的预测
         preds = _select_task_preds(preds, "pose")
         # 2.分离预测部分,姿态任务通常不需要proto,所以忽略第二个返回值
@@ -151,7 +138,7 @@ class _MultiTaskPoseValidator(PoseValidator):
         # nk:关键点总数 = 关键点个数 * 维度(通常是x,y,visibility或者x,y)
         nk = self.kpt_shape[0] * self.kpt_shape[1] if self.kpt_shape else 0
         for pred in preds:
-            extra = pred.pop("extra") # 提取包含关键点信息的额外数据
+            extra = pred.pop("extra")  # 提取包含关键点信息的额外数据
             if nk:
                 # 获取最后nk个值作为关键点数据
                 kpts_raw = extra[:, -nk:]
@@ -163,9 +150,7 @@ class _MultiTaskPoseValidator(PoseValidator):
 
 
 class MultiTaskValidator(DetectionValidator):
-    """
-    多任务验证器的主入口类,它负责协调Detect、Segment、Pose三个任务的验证过程
-    """
+    """多任务验证器的主入口类,它负责协调Detect、Segment、Pose三个任务的验证过程."""
 
     def __init__(self, dataloader=None, save_dir=None, args=None, _callbacks=None) -> None:
         super().__init__(dataloader, save_dir, args, _callbacks)
@@ -173,10 +158,7 @@ class MultiTaskValidator(DetectionValidator):
         self.args.task = "multitask"
 
     def _get_task_loader(self, trainer, task_name, task_cfg):
-        """
-        获取特定任务的数据加载器(DataLoader),因为多任务训练时,不同任务的数据集可能不同
-        """
-
+        """获取特定任务的数据加载器(DataLoader),因为多任务训练时,不同任务的数据集可能不同."""
         # 1.如果传入的dataloader已经是字典(包含多个加载器),直接按任务名获取
         if isinstance(self.dataloader, dict):
             loader = self.dataloader.get(task_name)
@@ -185,7 +167,7 @@ class MultiTaskValidator(DetectionValidator):
         # 2.如果是'detect'任务且有一个通用的dataloader,直接使用
         elif task_name == "detect" and self.dataloader is not None:
             return self.dataloader
-        
+
         # 3.如果没有现成的dataloader,则根据配置构建新的dataset和loader
         # 确定使用哪个数据集分割(val/test)
         split = task_cfg.get(self.args.split) or task_cfg.get("val") or task_cfg.get("test")
@@ -205,10 +187,7 @@ class MultiTaskValidator(DetectionValidator):
         )
 
     def __call__(self, trainer=None, model=None):
-        """
-        执行验证的主函数.会遍历所有任务,分别调用对应的子验证器进行评估
-        """
-
+        """执行验证的主函数.会遍历所有任务,分别调用对应的子验证器进行评估."""
         # 如果trainer中没有定义任务配置,回退到普通的父类验证逻辑
         if trainer is None and isinstance(self.dataloader, dict):
             task_validators = {
@@ -246,14 +225,14 @@ class MultiTaskValidator(DetectionValidator):
 
         if trainer is None or "tasks" not in getattr(trainer, "data", {}):
             return super().__call__(trainer, model)
-        
+
         # 定义任务名称与对应验证器类的映射
         task_validators = {
             "detect": _MultiTaskDetectValidator,
             "segment": _MultiTaskSegmentationValidator,
             "pose": _MultiTaskPoseValidator,
         }
-        
+
         # 遍历每个任务进行验证
         results = {}
         fitness = None
@@ -299,4 +278,3 @@ class MultiTaskValidator(DetectionValidator):
             results["fitness"] = fitness
 
         return results
-
