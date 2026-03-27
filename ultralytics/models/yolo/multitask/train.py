@@ -43,7 +43,7 @@ class MultiTaskTrainer(DetectionTrainer):
     """多任务训练器类,用于同时训练目标检测、实例分割和姿态估计任务。继承自DetectionTrainer."""
 
     def __init__(self, cfg=DEFAULT_CFG, overrides: dict[str, Any] | None = None, _callbacks=None):
-        """初始化训练器,调用父类构造函数"""
+        """初始化训练器,调用父类构造函数."""
         if overrides is None:
             overrides = {}
         # Keep task consistent with multitask heads and datasets.
@@ -51,14 +51,11 @@ class MultiTaskTrainer(DetectionTrainer):
         super().__init__(cfg, overrides, _callbacks)
 
     def get_dataset(self) -> dict[str, Any]:
-
-        """
-        加载并处理多任务数据集配置文件(data.yaml)
+        """加载并处理多任务数据集配置文件(data.yaml).
 
         这个方法不仅读取路径,还会检验是否包含了'task'字段,并解析detect/segment/pose三个任务各自的train/cal/test路径
         """
-
-        #加载yaml文件
+        # 加载yaml文件
         data = YAML.load(self.args.data, append_filename=True)
         # 核心检查：多任务配置必须包含'task'键
         if "tasks" not in data:
@@ -130,14 +127,11 @@ class MultiTaskTrainer(DetectionTrainer):
         return data
 
     def build_dataset(self, img_path: str, mode: str = "train", batch: int | None = None, task: str = "detect"):
-        """
-        构建特定任务的YOLO数据集
+        """构建特定任务的YOLO数据集.
 
         Args:
-            task (str):当前构建的是哪个任务的数据集(detect/segment/pose)
-
+            task (str): 当前构建的是哪个任务的数据集(detect/segment/pose)
         """
-
         # 计算网络步长(grid size),最小为32
         gs = max(int(self.model.stride.max() if self.model else 0), 32)
         # 复制参数并临时修改当前任务类型,以便build_yolo_dataset知道如何处理标签
@@ -146,19 +140,17 @@ class MultiTaskTrainer(DetectionTrainer):
         return build_yolo_dataset(task_args, img_path, batch, self.data, mode=mode, rect=mode == "val", stride=gs)
 
     def get_dataloader(self, dataset_path: str, batch_size: int = 16, rank: int = 0, mode: str = "train"):
-        """
-        构建数据加载器(DataLoader)
+        """构建数据加载器(DataLoader).
 
         关键点:训练模式下会返回一个MultiTaskLoader,包含所有任务的数据流
         """
-
         assert mode in {"train", "val"}
 
         # 训练模式:构建多任务混合加载器
         if mode == "train":
-            loaders = {}     # 存储每个任务的DataLoader
-            weights = {}     # 存储每个任务的权重(基于数据集大小)
-            cls_offsets = {} # 类别偏移量
+            loaders = {}  # 存储每个任务的DataLoader
+            weights = {}  # 存储每个任务的权重(基于数据集大小)
+            cls_offsets = {}  # 类别偏移量
 
             # 遍历所有任务(detect,segment,pose)
             for task_name, task_cfg in self.data["tasks"].items():
@@ -179,7 +171,7 @@ class MultiTaskTrainer(DetectionTrainer):
                 cls_offsets[task_name] = 0
             # 返回自定义的MultiTaskLoader,它负责在训练循环中从不同任务的loader中采样(抽取数据)
             return MultiTaskLoader(loaders, weights, cls_offsets)
-        
+
         # 验证模式:仅使用Detect数据集
         # 目前看来验证阶段主要评估检测性能,或者使用检测数据集进行基础验证
         # Validation uses per-task loaders so each head is evaluated on its own data.
@@ -206,10 +198,7 @@ class MultiTaskTrainer(DetectionTrainer):
         return loaders
 
     def get_model(self, cfg: str | None = None, weights: str | None = None, verbose: bool = True):
-        """
-        初始化多任务模型 (MultiTaskModel)
-        """
-
+        """初始化多任务模型 (MultiTaskModel)."""
         # 创建MultiTaskModel实例
         model = MultiTaskModel(
             cfg,
@@ -225,15 +214,13 @@ class MultiTaskTrainer(DetectionTrainer):
         return model
 
     def set_model_attributes(self):
-        """设置模型的属性，如类别数和类别名称"""
+        """设置模型的属性，如类别数和类别名称."""
         self.model.nc = self.data["nc"]
         self.model.names = self.data["names"]
         self.model.args = self.args
 
     def get_validator(self):
-        """
-        返回多任务验证器 (MultiTaskValidator)。
-        """
+        """返回多任务验证器 (MultiTaskValidator)。."""
         from .val import MultiTaskValidator
 
         self.loss_names = {
@@ -241,7 +228,9 @@ class MultiTaskTrainer(DetectionTrainer):
             "seg": ["seg_loss"],
             "pose": ["pose_loss", "kobj_loss"],
         }
-        return MultiTaskValidator(self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks)
+        return MultiTaskValidator(
+            self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
+        )
 
     def _flatten_loss_names(self):
         loss_names = []
@@ -274,8 +263,6 @@ class MultiTaskTrainer(DetectionTrainer):
         return ("\n" + "%11s" * (4 + len(loss_names))) % ("Epoch", "GPU_mem", *loss_names, "Instances", "Size")
 
     def plot_training_labels(self):
-        """
-        绘制训练标签可视化图。
-        此处直接 return,意味着多任务训练时跳过了默认的标签可视化步骤(可能是因为标签类型混合太复杂，难以统一绘制)
+        """绘制训练标签可视化图。 此处直接 return,意味着多任务训练时跳过了默认的标签可视化步骤(可能是因为标签类型混合太复杂，难以统一绘制).
         """
         return
