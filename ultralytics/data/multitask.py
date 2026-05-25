@@ -15,8 +15,6 @@ class _MultiTaskDatasetInfo:
         return sum(len(ds) for ds in self.datasets.values())
 
 
-
-
 class _SamplerProxy:
     """Proxy sampler to propagate set_epoch in distributed training."""
 
